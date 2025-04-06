@@ -535,7 +535,9 @@ var _ = Describe("Controllerutil", func() {
 			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultCreated))
 			Expect(err).NotTo(HaveOccurred())
 
-			op, err = controllerutil.CreateOrUpdate(context.TODO(), c, deploy, deploymentIdentity)
+			// Notably, the `specr` is the same function used to create the object - it should not
+			// cause any modifications to the object.
+			op, err = controllerutil.CreateOrUpdate(context.TODO(), c, deploy, specr)
 			By("returning no error")
 			Expect(err).NotTo(HaveOccurred())
 
