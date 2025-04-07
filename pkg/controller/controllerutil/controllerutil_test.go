@@ -530,13 +530,55 @@ var _ = Describe("Controllerutil", func() {
 		})
 
 		It("updates only changed objects", func() {
+			// Prior to the test, deploy only has ObjectMeta. This is due to the BeforeEach.
 			op, err := controllerutil.CreateOrUpdate(context.TODO(), c, deploy, specr)
 
+			// After the above CreateOrUpdate, deploy will have deplSpec attached by the specr
+			// function.
 			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultCreated))
 			Expect(err).NotTo(HaveOccurred())
 
-			// Notably, the `specr` is the same function used to create the object - it should not
-			// cause any modifications to the object.
+			// Let's save a copy of deploy and then perform some no-ops on it. We expect that
+			// existting will be equal to deploy after the no-ops.
+			existing := deploy.DeepCopyObject()
+			// For sanity, make sure that DeepCopyObject actually worked.
+			Expect(existing).To(Equal(deploy))
+
+			// Call specr. This this is the same function called from CreateOrUpdate, we expect
+			// that it will be a no-op.
+			err = specr()
+			Expect(err).NotTo(HaveOccurred())
+
+			// However...
+			Expect(existing).To(Equal(deploy))
+
+			// The above function fails, but fortunately for us, it also prints the differences.
+			// It looks something like this (the common lines have been removed):
+			//
+			//    <*v1.Deployment | 0xc000543908>: {                      |       <*v1.Deployment | 0xc00014ef08>: {
+			//            Replicas: 1,                                    |               Replicas: nil,
+			//                            TerminationMessagePath: "/dev/t |                               TerminationMessagePath: "",
+			//                            TerminationMessagePolicy: "File |                               TerminationMessagePolicy: "",
+			//                            ImagePullPolicy: "Always",      |                               ImagePullPolicy: "",
+			//
+			// I took a look at the API for deployment, and it turns out that Replicas will
+			// default to 1 if not set. The remaining fields are part of the Container API type,
+			// and also have default values that align with the above.
+			//
+			// We _know_ that the second specr is a no-op, so what else could be going on? Let's
+			// revisit the *first* call to CreateOrUpdate. We made the assumption that after that
+			// call, the only contents of deploy would be the ObjectMeta and deplSpec that we
+			// defined. However, we can see from the above output that this isn't true. The
+			// contents of deploy (at the time) included the default values. This means that
+			// existing would also get the default values. When we call specr, we wipe out those
+			// default values, and our test fails.
+
+			// Finally, suppose the above test is commented out. When we fetch the resource for
+			// the second time in the below call to CreateOrUpdate, we'll get the complete object,
+			// with defaults and all. But then when we call specr, we'll replace the entire Spec
+			// (which has the defaults), with deplSpec (which *doesn't* have the defaults), making
+			// the call to equality.Semantic.DeepEqual fail on every call, and this,
+			// CreateOrUpdate will always perform an update.
 			op, err = controllerutil.CreateOrUpdate(context.TODO(), c, deploy, specr)
 			By("returning no error")
 			Expect(err).NotTo(HaveOccurred())
