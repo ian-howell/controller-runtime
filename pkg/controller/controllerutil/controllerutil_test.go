@@ -538,8 +538,8 @@ var _ = Describe("Controllerutil", func() {
 			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultCreated))
 			Expect(err).NotTo(HaveOccurred())
 
-			// Let's save a copy of deploy and then perform some no-ops on it. We expect that
-			// existting will be equal to deploy after the no-ops.
+			// Let's save a copy of deploy and then perform a no-op on it. We expect that existing
+			// will be equal to deploy after the no-op.
 			existing := deploy.DeepCopyObject()
 			// For sanity, make sure that DeepCopyObject actually worked.
 			Expect(existing).To(Equal(deploy))
@@ -565,20 +565,21 @@ var _ = Describe("Controllerutil", func() {
 			// default to 1 if not set. The remaining fields are part of the Container API type,
 			// and also have default values that align with the above.
 			//
-			// We _know_ that the second specr is a no-op, so what else could be going on? Let's
-			// revisit the *first* call to CreateOrUpdate. We made the assumption that after that
-			// call, the only contents of deploy would be the ObjectMeta and deplSpec that we
+			// We know that the second specr should be a no-op, so what else could be going on?
+			// Let's revisit the *first* call to CreateOrUpdate. We made the assumption that after
+			// that call, the only contents of deploy would be the ObjectMeta and deplSpec that we
 			// defined. However, we can see from the above output that this isn't true. The
-			// contents of deploy (at the time) included the default values. This means that
-			// existing would also get the default values. When we call specr, we wipe out those
-			// default values, and our test fails.
+			// contents of deploy (at the time) included the default values. I believe this
+			// happened because the Defaulter for the deployment would've been run against it.
+			// This also means that existing would have the default values. When we call specr, we
+			// wipe out those default values, and our test fails.
 
-			// Finally, suppose the above test is commented out. When we fetch the resource for
-			// the second time in the below call to CreateOrUpdate, we'll get the complete object,
-			// with defaults and all. But then when we call specr, we'll replace the entire Spec
-			// (which has the defaults), with deplSpec (which *doesn't* have the defaults), making
-			// the call to equality.Semantic.DeepEqual fail on every call, and this,
-			// CreateOrUpdate will always perform an update.
+			// Finally, suppose the above call to specr (and the assertions) is commented out.
+			// When we fetch the resource for the second time in the below call to CreateOrUpdate,
+			// we'll get the complete object, with defaults and all. But then when we call specr,
+			// we'll replace the entire Spec (which has the defaults), with deplSpec (which
+			// *doesn't* have the defaults), making the call to equality.Semantic.DeepEqual fail
+			// on every call, and thus CreateOrUpdate will *ALWAYS* perform an update.
 			op, err = controllerutil.CreateOrUpdate(context.TODO(), c, deploy, specr)
 			By("returning no error")
 			Expect(err).NotTo(HaveOccurred())
