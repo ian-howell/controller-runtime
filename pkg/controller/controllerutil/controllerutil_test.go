@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -454,6 +455,9 @@ var _ = Describe("Controllerutil", func() {
 		var deplKey types.NamespacedName
 		var specr controllerutil.MutateFn
 
+		var deplSpecWithDefaults appsv1.DeploymentSpec
+		var specrWithDefaultsr controllerutil.MutateFn
+
 		BeforeEach(func() {
 			deploy = &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
@@ -483,12 +487,59 @@ var _ = Describe("Controllerutil", func() {
 				},
 			}
 
+			// deployment with all defaults set
+			deplSpecWithDefaults = appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"foo": "bar"},
+				},
+				Replicas: ptr.To(int32(1)),
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bar",
+						},
+					},
+					Spec: corev1.PodSpec{
+						RestartPolicy:                 corev1.RestartPolicyAlways,
+						TerminationGracePeriodSeconds: ptr.To(int64(30)),
+						DNSPolicy:                     corev1.DNSClusterFirst,
+						SecurityContext:               &corev1.PodSecurityContext{},
+						SchedulerName:                 "default-scheduler",
+						Containers: []corev1.Container{
+							{
+								Name:                     "busybox",
+								Image:                    "busybox",
+								TerminationMessagePath:   "/dev/termination-log",
+								TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+								ImagePullPolicy:          corev1.PullAlways,
+							},
+						},
+					},
+				},
+				Strategy: appsv1.DeploymentStrategy{
+					Type: appsv1.RollingUpdateDeploymentStrategyType,
+					RollingUpdate: &appsv1.RollingUpdateDeployment{
+						MaxUnavailable: &intstr.IntOrString{
+							Type:   intstr.String,
+							StrVal: "25%",
+						},
+						MaxSurge: &intstr.IntOrString{
+							Type:   intstr.String,
+							StrVal: "25%",
+						},
+					},
+				},
+				RevisionHistoryLimit:    ptr.To(int32(10)),
+				ProgressDeadlineSeconds: ptr.To(int32(600)),
+			}
+
 			deplKey = types.NamespacedName{
 				Name:      deploy.Name,
 				Namespace: deploy.Namespace,
 			}
 
 			specr = deploymentSpecr(deploy, deplSpec)
+			specrWithDefaultsr = deploymentSpecr(deploy, deplSpecWithDefaults)
 		})
 
 		It("creates a new object if one doesn't exists", func() {
@@ -541,6 +592,59 @@ var _ = Describe("Controllerutil", func() {
 
 			By("returning OperationResultNone")
 			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultNone))
+		})
+
+		// The next two tests verify that CreateOrUpdate will always report an update unless the
+		// object has *all* of its defaults set in the mutate function.
+
+		It("is idempotent if all defaults are set", func() {
+			op, err := controllerutil.CreateOrUpdate(context.TODO(), c, deploy, specrWithDefaultsr)
+
+			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultCreated))
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(deploy.Spec).To(BeEquivalentTo(deplSpecWithDefaults))
+
+			op, err = controllerutil.CreateOrUpdate(context.TODO(), c, deploy, specrWithDefaultsr)
+			By("returning no error")
+			Expect(err).NotTo(HaveOccurred())
+
+			By("returning OperationResultNone")
+			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultNone))
+		})
+
+		It("is idempotent even if defaults aren't set", func() {
+			op, err := controllerutil.CreateOrUpdate(context.TODO(), c, deploy, specr)
+
+			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultCreated))
+			Expect(err).NotTo(HaveOccurred())
+
+			op, err = controllerutil.CreateOrUpdate(context.TODO(), c, deploy, specr)
+			By("returning no error")
+			Expect(err).NotTo(HaveOccurred())
+
+			By("returning OperationResultNone")
+			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultNone))
+		})
+
+		// The following test verifies that CreateOrUpdate will overwrite any changes made outside of
+		// the mutate function. This is working correctly, but needs to be documented.
+
+		It("modifies objects that had non-identifier values erroneously pre-set", func() {
+			op, err := controllerutil.CreateOrUpdate(context.TODO(), c, deploy, specr)
+
+			Expect(op).To(BeEquivalentTo(controllerutil.OperationResultCreated))
+			Expect(err).NotTo(HaveOccurred())
+
+			// Change the object outside of the mutate function. Despite deploymentIdentity being
+			// a literal no-op, this test fails because Replicas will be overwritten.
+			deploy.Spec.Replicas = ptr.To(int32(5))
+			_, err = controllerutil.CreateOrUpdate(context.TODO(), c, deploy, deploymentIdentity)
+			// This also fails, but that should be self-evident, as specr replaces the entire Spec.
+			// _, err = controllerutil.CreateOrUpdate(context.TODO(), c, deploy, specr)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deploy.Spec.Replicas).To(HaveValue(BeEquivalentTo(int32(5))))
 		})
 
 		It("errors when MutateFn changes object name on creation", func() {
